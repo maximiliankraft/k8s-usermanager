@@ -1,0 +1,305 @@
+---
+- name: Setup Kubernetes on target host
+  hosts: k8s_target
+  become: true
+  vars:
+    k8s_version: "1.28"  # Adjust to your desired version
+    container_runtime: containerd  # or docker, cri-o
+  
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages
+      ansible.builtin.package:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when: ansible_os_family == "Debian"
+
+    - name: Download Kubernetes apt key
+      ansible.builtin.get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key
+        dest: /tmp/kubernetes-apt-keyring.asc
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Dearmor and install Kubernetes apt key
+      ansible.builtin.shell: |
+        cat /tmp/kubernetes-apt-keyring.asc | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      when: ansible_os_family == "Debian"
+
+    - name: Add Kubernetes repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
+        state: present
+        filename: kubernetes
+      when: ansible_os_family == "Debian"
+
+    - name: Install containerd
+      ansible.builtin.package:
+        name: containerd
+        state: present
+
+    - name: Create containerd configuration directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate default containerd configuration
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Enable SystemdCgroup in containerd
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^\s*SystemdCgroup = false'
+        line: '            SystemdCgroup = true'
+        state: present
+
+    - name: Start and enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Disable swap
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: Remove swap from fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '\sswap\s'
+        state: absent
+
+    - name: Load kernel modules
+      ansible.builtin.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Ensure kernel modules load on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Set sysctl parameters for Kubernetes
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/k8s.conf
+        reload: yes
+      loop:
+        - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { key: 'net.ipv4.ip_forward', value: '1' }
+
+    - name: Install Kubernetes packages
+      ansible.builtin.package:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Hold Kubernetes packages at current version
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+    - name: Check if Kubernetes is already initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_initialized
+
+    - name: Initialize Kubernetes cluster (control plane only)
+      ansible.builtin.command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      when: 
+        - not k8s_initialized.stat.exists
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      register: kubeadm_init
+
+    - name: Create .kube directory for user
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.kube"
+        state: directory
+        mode: '0755'
+      when: 
+        - not k8s_initialized.stat.exists
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+
+    - name: Copy kubeconfig to user directory
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ ansible_env.HOME }}/.kube/config"
+        remote_src: yes
+        mode: '0600'
+      when: 
+        - not k8s_initialized.stat.exists
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+    - name: Install Python 
+      ansible.builtin.package:
+        name: python3
+
+    - name: Install Kubernetes Python library (Debian package)
+      ansible.builtin.package:
+        name: python3-kubernetes
+        state: present
+      when: inventory_hostname in groups['k8s_control_plane'] | default([])
+
+    - name: Wait for etcd container to be running
+      ansible.builtin.shell: crictl ps | grep etcd | grep Running
+      register: etcd_running
+      until: etcd_running.rc == 0
+      retries: 30
+      delay: 10
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      changed_when: false
+      failed_when: false
+
+    - name: Display etcd status
+      ansible.builtin.debug:
+        msg: "etcd container status: {{ 'Running' if etcd_running.rc == 0 else 'Not running - cluster may have issues' }}"
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+
+    - name: Check etcd health
+      ansible.builtin.shell: |
+        ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/server.crt \
+          --key=/etc/kubernetes/pki/etcd/server.key \
+          endpoint health
+      register: etcd_health
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - etcd_running.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Display etcd health
+      ansible.builtin.debug:
+        var: etcd_health.stdout_lines
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - etcd_health.stdout_lines is defined
+
+    - name: Restart kubelet if etcd is unhealthy
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - etcd_running.rc != 0 or (etcd_health.rc is defined and etcd_health.rc != 0)
+
+    - name: Wait after kubelet restart
+      ansible.builtin.pause:
+        seconds: 20
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - etcd_running.rc != 0 or (etcd_health.rc is defined and etcd_health.rc != 0)
+
+    - name: Install Flannel CNI (example - adjust as needed)
+      kubernetes.core.k8s:
+        state: present
+        src: https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      when: 
+        - not k8s_initialized.stat.exists
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      environment:
+        KUBECONFIG: "{{ ansible_env.HOME }}/.kube/config"
+
+    - name: Wait for Kubernetes API to be available
+      ansible.builtin.command: kubectl get nodes
+      register: kubectl_nodes
+      until: kubectl_nodes.rc == 0
+      retries: 12
+      delay: 10
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      environment:
+        KUBECONFIG: "{{ ansible_env.HOME }}/.kube/config"
+      changed_when: false
+
+    - name: Check cluster status
+      ansible.builtin.command: kubectl get nodes
+      register: cluster_status
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      environment:
+        KUBECONFIG: "{{ ansible_env.HOME }}/.kube/config"
+      changed_when: false
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        var: cluster_status.stdout_lines
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+
+    - name: Get join command for worker nodes
+      ansible.builtin.shell: |
+        kubeadm token create --print-join-command 2>/dev/null || echo "Failed to generate join command"
+      register: join_command
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ ansible_env.HOME }}/.kube/config"
+
+    - name: Display join command
+      ansible.builtin.debug:
+        var: join_command.stdout
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - join_command.stdout is defined
+
+    - name: Read kubeconfig from remote server
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/admin.conf
+      register: kubeconfig_content
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+
+    - name: Display kubeconfig content
+      ansible.builtin.debug:
+        msg: "{{ kubeconfig_content['content'] | b64decode }}"
+      when: 
+        - inventory_hostname in groups['k8s_control_plane'] | default([])
+        - kubeconfig_content is defined
