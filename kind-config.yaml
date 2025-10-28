@@ -1,0 +1,36 @@
+# when creating a kind cluster, run this config file
+# sudo kind create cluster --config kind-config.yaml --name kind
+# then docker can access the cluster at localhost:6443 / host.docker.internal:6443
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # Bind API server to 0.0.0.0 to allow external access
+  apiServerAddress: "0.0.0.0"
+  apiServerPort: 6443
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      certSANs:
+      - localhost
+      - 127.0.0.1
+      - host.docker.internal
+      - kubernetes
+      - kubernetes.default
+      - kubernetes.default.svc
+      - kubernetes.default.svc.cluster.local
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
