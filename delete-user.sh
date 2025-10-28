@@ -3,6 +3,12 @@
 # Script to remove a user from the Kubernetes cluster
 # Usage: ./delete-user.sh <username>
 
+# Preserve user's home directory when running with sudo
+if [ -n "$SUDO_USER" ]; then
+    export KUBECONFIG="/home/$SUDO_USER/.kube/config"
+fi
+
+
 # Check if a username was provided
 if [ $# -ne 1 ]; then
   echo "Usage: $0 <username>"

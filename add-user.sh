@@ -5,6 +5,11 @@
 
 set -e
 
+# Preserve user's home directory when running with sudo
+if [ -n "$SUDO_USER" ]; then
+    export KUBECONFIG="/home/$SUDO_USER/.kube/config"
+fi
+
 # Configuration
 USERNAME="${1}"
 BASE_DOMAIN="${2}"
@@ -86,7 +91,7 @@ CSR_BASE64=$(cat "${USERNAME}.csr" | base64 | tr -d '\n')
 
 # 4. Create Kubernetes CSR object
 print_info "Submitting CSR to Kubernetes..."
-cat <<EOF | kubectl apply -f -
+cat <<EOF | kubectl apply -f /dev/stdin
 apiVersion: certificates.k8s.io/v1
 kind: CertificateSigningRequest
 metadata:
