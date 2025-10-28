@@ -5,8 +5,8 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
-  # Bind API server to 0.0.0.0 to allow external access
-  apiServerAddress: "0.0.0.0"
+  # apiServerAddress defaults to 127.0.0.1 which is accessible from host
+  # and allows docker containers to access via host.docker.internal
   apiServerPort: 6443
 nodes:
 - role: control-plane

@@ -54,6 +54,11 @@ CLUSTER_NAME=$(kubectl config view -o jsonpath='{.clusters[0].name}')
 CLUSTER_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
 CLUSTER_CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
 
+# Fix server URL if it's using 0.0.0.0 (replace with 127.0.0.1)
+CLUSTER_SERVER=$(echo "$CLUSTER_SERVER" | sed 's|0\.0\.0\.0|127.0.0.1|g')
+
+echo "Cluster Server: $CLUSTER_SERVER"
+
 if [ -z "$CLUSTER_NAME" ] || [ -z "$CLUSTER_SERVER" ]; then
     print_error "Could not retrieve cluster information. Make sure kubectl is configured."
     exit 1
@@ -113,9 +118,20 @@ fi
 print_info "Certificate issued successfully"
 
 # 8. Create namespace if it doesn't exist
-if ! kubectl get namespace "$NAMESPACE" &> /dev/null; then
-    print_warning "Namespace $NAMESPACE does not exist. Creating it..."
-    kubectl create namespace "$NAMESPACE"
+if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+  print_warning "Namespace $NAMESPACE does not exist. Creating it..."
+  kubectl create namespace "$NAMESPACE"
+  # wait for namespace to be available (avoid race conditions)
+  for i in {1..10}; do
+    if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    print_error "Failed to create namespace $NAMESPACE"
+    exit 1
+  fi
 fi
 
 # 9. Check if ingress class exists
@@ -183,16 +199,16 @@ roleRef:
 EOF
 
 # 12. Check if wildcard certificate exists or needs to be created
-if ! kubectl get secret "$CERT_NAME" -n "$NAMESPACE" &> /dev/null; then
+if ! kubectl get secret "$CERT_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
     print_warning "Certificate $CERT_NAME not found in namespace $NAMESPACE"
     
     # Check if it exists in other namespace to copy (usually cert-manager or kube-system)
-    if kubectl get secret "$CERT_NAME" -n cert-manager &> /dev/null; then
+  if kubectl get namespace cert-manager >/dev/null 2>&1 && kubectl get secret "$CERT_NAME" -n cert-manager >/dev/null 2>&1; then
         print_info "Found certificate in cert-manager namespace, copying..."
         kubectl get secret "$CERT_NAME" -n cert-manager -o yaml | \
             sed "s/namespace: cert-manager/namespace: $NAMESPACE/" | \
             kubectl apply -f -
-    elif kubectl get secret "$CERT_NAME" -n kube-system &> /dev/null; then
+  elif kubectl get namespace kube-system >/dev/null 2>&1 && kubectl get secret "$CERT_NAME" -n kube-system >/dev/null 2>&1; then
         print_info "Found certificate in kube-system namespace, copying..."
         kubectl get secret "$CERT_NAME" -n kube-system -o yaml | \
             sed "s/namespace: kube-system/namespace: $NAMESPACE/" | \
@@ -285,9 +301,8 @@ data:
           metadata:
             name: myapp-ingress
             namespace: ${NAMESPACE}
-            annotations:
-              kubernetes.io/ingress.class: ${INGRESS_CLASS}
           spec:
+            ingressClassName: ${INGRESS_CLASS}
             tls:
             - hosts:
               - ${USER_SUBDOMAIN}
@@ -364,9 +379,8 @@ kind: Ingress
 metadata:
   name: ${USERNAME}-ingress
   namespace: ${NAMESPACE}
-  annotations:
-    kubernetes.io/ingress.class: ${INGRESS_CLASS}
 spec:
+  ingressClassName: ${INGRESS_CLASS}
   tls:
   - hosts:
     - ${USER_SUBDOMAIN}
@@ -461,9 +475,8 @@ kind: Ingress
 metadata:
   name: example-app
   namespace: ${NAMESPACE}
-  annotations:
-    kubernetes.io/ingress.class: ${INGRESS_CLASS}
 spec:
+  ingressClassName: ${INGRESS_CLASS}
   tls:
   - hosts:
     - ${USER_SUBDOMAIN}

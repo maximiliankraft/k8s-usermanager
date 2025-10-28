@@ -68,12 +68,12 @@ fi
 
 # Remove the user's certificate files
 echo "Removing certificate files..."
-rm -f "k8s-users/$USERNAME.key" 2>/dev/null || true
-rm -f "k8s-users/$USERNAME.csr" 2>/dev/null || true
-rm -f "k8s-users/$USERNAME.crt" 2>/dev/null || true
-rm -f "k8s-users/$USERNAME-kubeconfig.yaml" 2>/dev/null || true
-rm -f "k8s-users/$USERNAME-example-app.yaml" 2>/dev/null || true
-rm -f "k8s-users/$USERNAME-nginx-example.yaml" 2>/dev/null || true
+rm -f "k8s-users/$USERNAME.key"
+rm -f "k8s-users/$USERNAME.csr"
+rm -f "k8s-users/$USERNAME.crt"
+rm -f "k8s-users/$USERNAME-kubeconfig.yaml"
+rm -f "k8s-users/$USERNAME-example-app.yaml"
+rm -f "k8s-users/$USERNAME-nginx-example.yaml"
 
 # Delete the user from Kubernetes
 echo "Revoking user certificate..."

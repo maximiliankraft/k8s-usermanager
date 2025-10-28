@@ -1,6 +1,12 @@
 # K8s user creation
 
-Run `sh ./add-user.sh <name>`
+## Prerequisites
+
+Before creating users, ensure the nginx ingress controller is installed. See [INGRESS-SETUP-README.md](./INGRESS-SETUP-README.md) for instructions.
+
+## Creating a User
+
+Run `sh ./add-user.sh <name> <domain>`
 
 To use this configuration:
 ```sh
