@@ -59,8 +59,8 @@ CLUSTER_NAME=$(kubectl config view -o jsonpath='{.clusters[0].name}')
 CLUSTER_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
 CLUSTER_CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
 
-# Fix server URL if it's using 0.0.0.0 (replace with 127.0.0.1)
-CLUSTER_SERVER=$(echo "$CLUSTER_SERVER" | sed 's|0\.0\.0\.0|127.0.0.1|g')
+# Fix server URL: replace internal/container hostnames with the accessible address
+CLUSTER_SERVER=$(echo "$CLUSTER_SERVER" | sed 's|0\.0\.0\.0|127.0.0.1|g; s|kind-control-plane|127.0.0.1|g')
 
 echo "Cluster Server: $CLUSTER_SERVER"
 
